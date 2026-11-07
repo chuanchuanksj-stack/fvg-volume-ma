@@ -20,6 +20,8 @@ vpGap    = input.int(2, "Profile Gap from Last Bar (bars)", minval=0, maxval=100
 showVA   = input.bool(true, "Show Value Area (VA)")
 vaPct    = input.float(70.0, "Value Area Volume %", minval=50.0, maxval=95.0) / 100.0
 pocOn    = input.bool(true, "Highlight POC (Point of Control)")
+lvnPct   = input.float(20.0, "Vacuum Row Threshold (% of POC Row)", minval=5.0, maxval=50.0, tooltip="A row whose volume is below this share of the POC (Point of Control) row counts as sparse and is drawn in gray") / 100.0
+lvnMin   = input.int(3, "Min Consecutive Rows for a Vacuum Band", minval=2, maxval=10, tooltip="Sparse rows in a run of at least this many form a vacuum band (fast lane) and are reported in the panel")
 
 string GMA = "Moving Averages (EMA + SMA)"
 maOn  = input.bool(true, "Show Moving Averages (master)", group=GMA)
@@ -97,6 +99,10 @@ var label[] profLabels = array.new_label()
 var float gPoc = na
 var float gVah = na
 var float gVal = na
+var float gVacUpB = na
+var float gVacUpT = na
+var float gVacDnB = na
+var float gVacDnT = na
 
 hi = ta.highest(high, lookback)
 lo = ta.lowest(low, lookback)
@@ -160,24 +166,50 @@ if barstate.islast
     gPoc := lo + (pocRow + 0.5) * step
     gVah := showVA ? lo + (vaTop + 1) * step : na
     gVal := showVA ? lo + vaBot * step : na
+    // -- Vacuum bands: runs of sparse rows; nearest band above price and nearest below --
+    gVacUpB := na
+    gVacUpT := na
+    gVacDnB := na
+    gVacDnT := na
+    runStart = -1
+    for r = 0 to rows
+        sparse = r < rows ? (maxTot > 0 and array.get(totVol, r) < lvnPct * maxTot) : false
+        if sparse and runStart < 0
+            runStart := r
+        if not sparse and runStart >= 0
+            if r - runStart >= lvnMin
+                bB = lo + runStart * step
+                bT = lo + r * step
+                if bB >= close and (na(gVacUpB) or bB < gVacUpB)
+                    gVacUpB := bB
+                    gVacUpT := bT
+                if bT <= close and (na(gVacDnT) or bT > gVacDnT)
+                    gVacDnB := bB
+                    gVacDnT := bT
+            runStart := -1
 
     xRight = bar_index + vpGap + maxWidth
     labelX = xRight - maxWidth - 2
     colUp = color.rgb(52, 158, 148)
     colDn = color.rgb(163, 86, 76)
+    colUpG = color.rgb(158, 164, 170)
+    colDnG = color.rgb(188, 191, 197)
 
     for r = 0 to rows - 1
         mid = lo + (r + 0.5) * step
         t = array.get(totVol, r)
         if t > 0 and maxTot > 0
             wTot = t / maxTot * maxWidth
+            rowSparse = t < lvnPct * maxTot
+            cU = rowSparse ? colUpG : colUp
+            cD = rowSparse ? colDnG : colDn
             wUp = array.get(upVol, r) / maxTot * maxWidth
             wDn = wTot - wUp
             x1 = xRight - int(math.round(wUp))
             if wUp >= 1
-                array.push(profLines, line.new(xRight, mid, x1, mid, xloc.bar_index, extend.none, colUp, line.style_solid, 2))
+                array.push(profLines, line.new(xRight, mid, x1, mid, xloc.bar_index, extend.none, cU, line.style_solid, 2))
             if wDn >= 1
-                array.push(profLines, line.new(x1, mid, xRight - int(math.round(wTot)), mid, xloc.bar_index, extend.none, colDn, line.style_solid, 2))
+                array.push(profLines, line.new(x1, mid, xRight - int(math.round(wTot)), mid, xloc.bar_index, extend.none, cD, line.style_solid, 2))
             if pocOn and r == pocRow
                 array.push(profLines, line.new(bar_index - lookback + 1, mid, xRight, mid, xloc.bar_index, extend.none, color.rgb(217, 119, 6), line.style_solid, 3))
                 array.push(profLabels, label.new(labelX, mid, "POC " + str.tostring(mid, format.mintick), xloc.bar_index, yloc.price, color.rgb(217, 119, 6), label.style_none, color.rgb(217, 119, 6), size.normal))
@@ -286,7 +318,7 @@ f_zones(zbC, ztC, zpC, zdC, fvgOn and fvgCurOn, newBC, high[2], low, newSC, high
 string GB = "Background Panel"
 bgOn = input.bool(true, "Show Background Panel (top right)", group=GB, tooltip="Reports structural background only (position / long-term / short-term mechanical score). Not a trading signal; wait for your own trigger.")
 
-var table bgTbl = table.new(position.top_right, 2, 7, bgcolor=color.new(#FFFFFF, 8), border_width=1, border_color=color.new(#9E9E9E, 30))
+var table bgTbl = table.new(position.top_right, 2, 9, bgcolor=color.new(#FFFFFF, 8), border_width=1, border_color=color.new(#9E9E9E, 30))
 
 // Find the nearest bearish zone above price and the nearest bullish zone below price in one FVG set
 f_near(tops, bots, dirs, price) =>
@@ -375,6 +407,8 @@ if barstate.islast
             supB := sB3
             supTag := "Daily"
         resText = not na(resB) ? str.tostring(resB, format.mintick) + "-" + str.tostring(resT, format.mintick) + " (" + resTag + ")" : not na(gVah) and gVah > close ? "VAH " + str.tostring(gVah, format.mintick) : "No nearby resistance"
+        vacUpText = not na(gVacUpB) ? str.tostring(gVacUpB, format.mintick) + "-" + str.tostring(gVacUpT, format.mintick) : "No vacuum band"
+        vacDnText = not na(gVacDnB) ? str.tostring(gVacDnB, format.mintick) + "-" + str.tostring(gVacDnT, format.mintick) : "No vacuum band"
         supText = not na(supT) ? str.tostring(supB, format.mintick) + "-" + str.tostring(supT, format.mintick) + " (" + supTag + ")" : not na(gVal) and gVal < close ? "VAL " + str.tostring(gVal, format.mintick) : "No nearby support"
         // -- Fill the table --
         tc = #37474F
@@ -392,3 +426,7 @@ if barstate.islast
         table.cell(bgTbl, 1, 5, resText, text_size=size.small, text_color=tc)
         table.cell(bgTbl, 0, 6, "Support Below", text_size=size.small, text_color=tc)
         table.cell(bgTbl, 1, 6, supText, text_size=size.small, text_color=tc)
+        table.cell(bgTbl, 0, 7, "Vacuum Above", text_size=size.small, text_color=tc)
+        table.cell(bgTbl, 1, 7, vacUpText, text_size=size.small, text_color=tc)
+        table.cell(bgTbl, 0, 8, "Vacuum Below", text_size=size.small, text_color=tc)
+        table.cell(bgTbl, 1, 8, vacDnText, text_size=size.small, text_color=tc)

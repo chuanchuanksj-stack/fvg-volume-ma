@@ -16,6 +16,7 @@
 - 按价位分行统计成交量，涨 K / 跌 K 分色绘制，固定画在最后一根 K 线右侧的空白区，不遮挡 K 线
 - 标出 **POC**（最大成交价位，粗橙线向左横贯回看区间）、**VAH / VAL**（价值区上下沿，默认覆盖 70% 成交量）
 - 统计窗口 = 从最后一根 K 往前数的固定根数（默认 200 根），不是随缩放变化的可见范围
+- **真空带（LVN）自动标灰**：某行成交量低于 POC 行的 20%（可调）算稀疏行，柱子自动变灰；连续 ≥3 行（可调）成段即真空带，背景面板会报出最近的上方 / 下方真空带价位段
 
 ### 2. 双均线系统
 - EMA（指数移动平均）与 MA（简单移动平均）各 20 / 60 / 120 / 200，共 8 条，默认全开，可按组关闭
@@ -50,6 +51,8 @@
 | 分布行数 | 30 | 价格分行数 |
 | 价值区占比 | 70% | VAH / VAL 覆盖的成交量比例 |
 | 成交量分布距最后一根K线 | 2 根 | 分布图与 K 线的间隔 |
+| 真空行判定 | 低于 POC 行的 20% | 低于此比例的行算稀疏行并标灰 |
+| 成段真空最少连续行数 | 3 | 连续稀疏行成段才报为真空带 |
 | 每个周期最多保留 FVG 数 | 5 | 1H / 4H / 日线 / 当前周期各自计数 |
 | FVG 向右延长 | 10 根 | 缺口带向右延伸长度 |
 
@@ -91,6 +94,7 @@ A 3-in-1 TradingView indicator (Pine Script v6): **Volume Profile + dual moving 
 - Volume-by-price rows, split by up/down bars, drawn in the empty space to the right of the last bar — never covering your candles
 - **POC** (Point of Control, thick orange line extending left across the lookback window) and **VAH / VAL** (value-area high/low, 70% of volume by default)
 - Fixed lookback window counted back from the last bar (default 200 bars), not the visible chart range
+- **Vacuum bands (LVN) auto-grayed**: a row below 20% of the POC row's volume (adjustable) counts as sparse and turns gray; runs of ≥3 sparse rows (adjustable) form a vacuum band, and the background panel reports the nearest vacuum band above / below price
 
 **2. Dual moving-average system**
 - EMA and SMA at 20 / 60 / 120 / 200 (8 lines), all on by default, can be toggled per group
@@ -125,6 +129,8 @@ A mechanical 3-factor score of the current structural background — **context o
 | Profile rows | 30 | Price rows |
 | Value area % | 70% | Volume covered by VAH / VAL |
 | Profile gap from last bar | 2 bars | Space between candles and the profile |
+| Vacuum row threshold | 20% of the POC row | Rows below this share are sparse and grayed |
+| Min rows for a vacuum band | 3 | Consecutive sparse rows needed to form a band |
 | Max FVG zones per timeframe | 5 | Counted separately for 1H / 4H / Daily / chart TF |
 | FVG right extension | 10 bars | How far zones extend to the right |
 
