@@ -1,0 +1,394 @@
+//@version=6
+// © QINGFANG
+// Released under the MIT License (see the LICENSE file in this repo). Free to use, modify and distribute - please keep this copyright line.
+// Volume Profile (free edition) + Dual Moving Averages + Multi-Timeframe FVG
+// Methodology: Pine has no tick data, so each bar's volume is spread evenly across its high-low range.
+// This differs from TradingView's paid tick-based VPVR; good enough as a structural reference (support/resistance, congestion zones).
+// Profile range = a fixed number of bars counted back from the last bar (Lookback), NOT the visible chart range.
+// Symbols without volume data use 1 per bar (relative shape only).
+// Dual MAs: EMA and SMA at 20/60/120/200, on by default.
+// FVG (Fair Value Gap): 3-candle gap - bullish gap = candle 3 low > candle 1 high (support zone below),
+// bearish gap = candle 3 high < candle 1 low (resistance zone above). 1H/4H/Daily always on, judged on closed candles, no repainting;
+// the chart-timeframe FVG has its own switch (default off). A zone is deleted once price fully fills it
+// (bullish gap: close through its bottom; bearish gap: close through its top); oldest zones are dropped beyond the per-timeframe cap.
+indicator("FVG Volume-MA", shorttitle="FVG Volume-MA", overlay=true, max_lines_count=500, max_boxes_count=500, max_bars_back=5000)
+
+lookback = input.int(200, "Lookback Bars", minval=20, maxval=1000)
+rows     = input.int(30, "Profile Rows", minval=10, maxval=60)
+maxWidth = input.int(30, "Max Width (bars)", minval=10, maxval=100)
+vpGap    = input.int(2, "Profile Gap from Last Bar (bars)", minval=0, maxval=100, tooltip="Gap between the profile's left edge and the last bar; profile right edge = this gap + Max Width (bars)")
+showVA   = input.bool(true, "Show Value Area (VA)")
+vaPct    = input.float(70.0, "Value Area Volume %", minval=50.0, maxval=95.0) / 100.0
+pocOn    = input.bool(true, "Highlight POC (Point of Control)")
+
+string GMA = "Moving Averages (EMA + SMA)"
+maOn  = input.bool(true, "Show Moving Averages (master)", group=GMA)
+emaOn = input.bool(true, "Show EMA Group (solid, thicker)", group=GMA)
+smaOn = input.bool(true, "Show SMA Group (faint, thinner)", group=GMA)
+
+string GF = "FVG (Fair Value Gap)"
+fvgOn    = input.bool(true, "Show FVG (master)", group=GF)
+fvgCurOn = input.bool(false, "Show Chart-Timeframe FVG", group=GF, tooltip="1H / 4H / Daily FVG are always on; this switch only controls the chart timeframe's own FVG")
+fvgMax   = input.int(5, "Max FVG Zones per Timeframe", minval=1, maxval=20, group=GF)
+fvgExt   = input.int(10, "FVG Extension (bars)", minval=0, maxval=200, group=GF)
+
+// -- Dual MAs: same color per period, EMA solid & thick, SMA faint & thin --
+cMA20 = #DFA32A
+cMA60 = #5B84AE
+cMA120 = #9678B6
+cMA200 = #C4555E
+plot(maOn and emaOn ? ta.ema(close, 20)  : na, "EMA 20",  color.new(cMA20, 10),  2)
+plot(maOn and emaOn ? ta.ema(close, 60)  : na, "EMA 60",  color.new(cMA60, 10),  2)
+plot(maOn and emaOn ? ta.ema(close, 120) : na, "EMA 120", color.new(cMA120, 10), 2)
+plot(maOn and emaOn ? ta.ema(close, 200) : na, "EMA 200", color.new(cMA200, 10), 2)
+plot(maOn and smaOn ? ta.sma(close, 20)  : na, "MA 20",  color.new(cMA20, 65),  1)
+plot(maOn and smaOn ? ta.sma(close, 60)  : na, "MA 60",  color.new(cMA60, 65),  1)
+plot(maOn and smaOn ? ta.sma(close, 120) : na, "MA 120", color.new(cMA120, 65), 1)
+plot(maOn and smaOn ? ta.sma(close, 200) : na, "MA 200", color.new(cMA200, 65), 1)
+
+// -- FVG detection (evaluated in the target timeframe): last three closed candles [3][2][1], no lookahead --
+// Returns [bullish gap?, gap bottom, gap top, bearish gap?, gap bottom, gap top, middle candle start time]
+f_fvg() =>
+    bull = low[1] > high[3]
+    bear = high[1] < low[3]
+    [bull, high[3], low[1], bear, high[1], low[3], time[2]]
+
+// -- FVG zone manager: delete on fill, extend right edge, add new, drop oldest beyond cap (mutates only the arrays passed in, never global scalars); onOff=false clears the set --
+f_zones(boxes, tops, bots, dirs, onOff, addBull, nbBot, nbTop, addBear, nsBot, nsTop, leftT, tag, bullCol, bearCol, bullBord, bearBord, bStyle) =>
+    if not onOff
+        while array.size(boxes) > 0
+            box.delete(array.shift(boxes))
+            array.shift(tops)
+            array.shift(bots)
+            array.shift(dirs)
+    else
+        extMs = int(fvgExt * nz(timeframe.in_seconds(), 2592000.0) * 1000)
+        i = array.size(boxes) - 1
+        while i >= 0
+            d = array.get(dirs, i)
+            filled = d > 0 ? low <= array.get(bots, i) : high >= array.get(tops, i)
+            if filled
+                box.delete(array.get(boxes, i))
+                array.remove(boxes, i)
+                array.remove(tops, i)
+                array.remove(bots, i)
+                array.remove(dirs, i)
+            else
+                box.set_right(array.get(boxes, i), time + extMs)
+            i -= 1
+        if addBull
+            array.push(boxes, box.new(leftT, nbTop, time + extMs, nbBot, xloc=xloc.bar_time, bgcolor=bullCol, border_color=bullBord, border_style=bStyle, text=tag, text_color=bullBord, text_size=size.tiny))
+            array.push(tops, nbTop)
+            array.push(bots, nbBot)
+            array.push(dirs, 1)
+        if addBear
+            array.push(boxes, box.new(leftT, nsTop, time + extMs, nsBot, xloc=xloc.bar_time, bgcolor=bearCol, border_color=bearBord, border_style=bStyle, text=tag, text_color=bearBord, text_size=size.tiny))
+            array.push(tops, nsTop)
+            array.push(bots, nsBot)
+            array.push(dirs, -1)
+        while array.size(boxes) > fvgMax
+            box.delete(array.shift(boxes))
+            array.shift(tops)
+            array.shift(bots)
+            array.shift(dirs)
+
+var line[] profLines = array.new_line()
+var label[] profLabels = array.new_label()
+var float gPoc = na
+var float gVah = na
+var float gVal = na
+
+hi = ta.highest(high, lookback)
+lo = ta.lowest(low, lookback)
+
+if barstate.islast
+    for l in profLines
+        line.delete(l)
+    array.clear(profLines)
+    for lb in profLabels
+        label.delete(lb)
+    array.clear(profLabels)
+
+    step = (hi - lo) / rows
+    step := step <= 0 ? syminfo.mintick : step
+
+    upVol = array.new_float(rows, 0.0)
+    dnVol = array.new_float(rows, 0.0)
+
+    for i = 0 to lookback - 1
+        v = nz(volume[i], 0.0)
+        v := v <= 0 ? 1.0 : v
+        topRow = math.max(0, math.min(rows - 1, int(math.floor((high[i] - lo) / step))))
+        botRow = math.max(0, math.min(rows - 1, int(math.floor((low[i] - lo) / step))))
+        span = topRow - botRow + 1
+        per = v / span
+        isUp = close[i] >= open[i]
+        for r = botRow to topRow
+            if isUp
+                array.set(upVol, r, array.get(upVol, r) + per)
+            else
+                array.set(dnVol, r, array.get(dnVol, r) + per)
+
+    totVol = array.new_float(rows, 0.0)
+    maxTot = 0.0
+    totalAll = 0.0
+    pocRow = 0
+    for r = 0 to rows - 1
+        t = array.get(upVol, r) + array.get(dnVol, r)
+        array.set(totVol, r, t)
+        totalAll += t
+        if t > maxTot
+            maxTot := t
+            pocRow := r
+
+    // Value area: expand from the POC row to both sides until the target share of total volume is reached
+    vaTop = pocRow
+    vaBot = pocRow
+    if showVA
+        vaVol = array.get(totVol, pocRow)
+        target = vaPct * totalAll
+        while vaVol < target and (vaTop < rows - 1 or vaBot > 0)
+            upV = vaTop < rows - 1 ? array.get(totVol, vaTop + 1) : -1.0
+            dnV = vaBot > 0 ? array.get(totVol, vaBot - 1) : -1.0
+            if upV >= dnV and upV >= 0
+                vaTop += 1
+                vaVol += upV
+            else if dnV >= 0
+                vaBot -= 1
+                vaVol += dnV
+
+    gPoc := lo + (pocRow + 0.5) * step
+    gVah := showVA ? lo + (vaTop + 1) * step : na
+    gVal := showVA ? lo + vaBot * step : na
+
+    xRight = bar_index + vpGap + maxWidth
+    labelX = xRight - maxWidth - 2
+    colUp = color.rgb(52, 158, 148)
+    colDn = color.rgb(163, 86, 76)
+
+    for r = 0 to rows - 1
+        mid = lo + (r + 0.5) * step
+        t = array.get(totVol, r)
+        if t > 0 and maxTot > 0
+            wTot = t / maxTot * maxWidth
+            wUp = array.get(upVol, r) / maxTot * maxWidth
+            wDn = wTot - wUp
+            x1 = xRight - int(math.round(wUp))
+            if wUp >= 1
+                array.push(profLines, line.new(xRight, mid, x1, mid, xloc.bar_index, extend.none, colUp, line.style_solid, 2))
+            if wDn >= 1
+                array.push(profLines, line.new(x1, mid, xRight - int(math.round(wTot)), mid, xloc.bar_index, extend.none, colDn, line.style_solid, 2))
+            if pocOn and r == pocRow
+                array.push(profLines, line.new(bar_index - lookback + 1, mid, xRight, mid, xloc.bar_index, extend.none, color.rgb(217, 119, 6), line.style_solid, 3))
+                array.push(profLabels, label.new(labelX, mid, "POC " + str.tostring(mid, format.mintick), xloc.bar_index, yloc.price, color.rgb(217, 119, 6), label.style_none, color.rgb(217, 119, 6), size.normal))
+
+    if showVA
+        vah = lo + (vaTop + 1) * step
+        val_ = lo + vaBot * step
+        array.push(profLines, line.new(bar_index - lookback + 1, vah, xRight, vah, xloc.bar_index, extend.none, color.rgb(122, 125, 138), line.style_dashed, 2))
+        array.push(profLines, line.new(bar_index - lookback + 1, val_, xRight, val_, xloc.bar_index, extend.none, color.rgb(122, 125, 138), line.style_dashed, 2))
+        array.push(profLabels, label.new(labelX, vah, "VAH " + str.tostring(vah, format.mintick), xloc.bar_index, yloc.price, color.rgb(122, 125, 138), label.style_none, color.rgb(122, 125, 138), size.normal))
+        array.push(profLabels, label.new(labelX, val_, "VAL " + str.tostring(val_, format.mintick), xloc.bar_index, yloc.price, color.rgb(122, 125, 138), label.style_none, color.rgb(122, 125, 138), size.normal))
+
+// == Multi-timeframe FVG: 1H / 4H / Daily always on ==
+// Zone colors: bullish gap green (support), bearish gap red (resistance); higher timeframe = more solid; zone text tags the timeframe.
+fvgBull1H  = color.new(#089981, 92)
+fvgBear1H  = color.new(#F23645, 92)
+fvgBull1Hb = color.new(#089981, 55)
+fvgBear1Hb = color.new(#F23645, 55)
+fvgBull4H  = color.new(#089981, 94)
+fvgBear4H  = color.new(#F23645, 94)
+fvgBull4Hb = color.new(#089981, 62)
+fvgBear4Hb = color.new(#F23645, 62)
+fvgBullD   = color.new(#089981, 100)
+fvgBearD   = color.new(#F23645, 100)
+fvgBullDb  = color.new(#089981, 68)
+fvgBearDb  = color.new(#F23645, 68)
+
+[bB60, bBot60, bTop60, sB60, sBot60, sTop60, tMid60] = request.security(syminfo.tickerid, "60", f_fvg())
+[bB240, bBot240, bTop240, sB240, sBot240, sTop240, tMid240] = request.security(syminfo.tickerid, "240", f_fvg())
+[bBD, bBotD, bTopD, sBD, sBotD, sTopD, tMidD] = request.security(syminfo.tickerid, "D", f_fvg())
+
+// — 1H —
+var box[]   zb60 = array.new_box()
+var float[] zt60 = array.new_float()
+var float[] zp60 = array.new_float()
+var int[]   zd60 = array.new_int()
+var float lBTop60 = na
+var float lBBot60 = na
+var float lSTop60 = na
+var float lSBot60 = na
+newB60 = bB60 and (na(lBTop60) or bTop60 != lBTop60 or bBot60 != lBBot60)
+newS60 = sB60 and (na(lSTop60) or sTop60 != lSTop60 or sBot60 != lSBot60)
+if bB60
+    lBTop60 := bTop60
+    lBBot60 := bBot60
+if sB60
+    lSTop60 := sTop60
+    lSBot60 := sBot60
+f_zones(zb60, zt60, zp60, zd60, fvgOn, newB60, bBot60, bTop60, newS60, sBot60, sTop60, tMid60, "FVG 1H", fvgBull1H, fvgBear1H, fvgBull1Hb, fvgBear1Hb, line.style_solid)
+
+// — 4H —
+var box[]   zb240 = array.new_box()
+var float[] zt240 = array.new_float()
+var float[] zp240 = array.new_float()
+var int[]   zd240 = array.new_int()
+var float lBTop240 = na
+var float lBBot240 = na
+var float lSTop240 = na
+var float lSBot240 = na
+newB240 = bB240 and (na(lBTop240) or bTop240 != lBTop240 or bBot240 != lBBot240)
+newS240 = sB240 and (na(lSTop240) or sTop240 != lSTop240 or sBot240 != lSBot240)
+if bB240
+    lBTop240 := bTop240
+    lBBot240 := bBot240
+if sB240
+    lSTop240 := sTop240
+    lSBot240 := sBot240
+f_zones(zb240, zt240, zp240, zd240, fvgOn, newB240, bBot240, bTop240, newS240, sBot240, sTop240, tMid240, "FVG 4H", fvgBull4H, fvgBear4H, fvgBull4Hb, fvgBear4Hb, line.style_solid)
+
+// - Daily -
+var box[]   zbD = array.new_box()
+var float[] ztD = array.new_float()
+var float[] zpD = array.new_float()
+var int[]   zdD = array.new_int()
+var float lBTopD = na
+var float lBBotD = na
+var float lSTopD = na
+var float lSBotD = na
+newBD = bBD and (na(lBTopD) or bTopD != lBTopD or bBotD != lBBotD)
+newSD = sBD and (na(lSTopD) or sTopD != lSTopD or sBotD != lSBotD)
+if bBD
+    lBTopD := bTopD
+    lBBotD := bBotD
+if sBD
+    lSTopD := sTopD
+    lSBotD := sBotD
+f_zones(zbD, ztD, zpD, zdD, fvgOn, newBD, bBotD, bTopD, newSD, sBotD, sTopD, tMidD, "FVG Daily", fvgBullD, fvgBearD, fvgBullDb, fvgBearDb, line.style_dashed)
+
+// == Chart-timeframe FVG (switch default off; turning it off clears its zones) ==
+var box[]   zbC = array.new_box()
+var float[] ztC = array.new_float()
+var float[] zpC = array.new_float()
+var int[]   zdC = array.new_int()
+var int lMidC = na
+curBull = low > high[2]
+curBear = high < low[2]
+newBC = fvgCurOn and barstate.isconfirmed and curBull and (na(lMidC) or time[1] != lMidC)
+newSC = fvgCurOn and barstate.isconfirmed and curBear and (na(lMidC) or time[1] != lMidC)
+if newBC or newSC
+    lMidC := time[1]
+f_zones(zbC, ztC, zpC, zdC, fvgOn and fvgCurOn, newBC, high[2], low, newSC, high, low[2], time[1], "FVG Chart", color.new(#089981, 93), color.new(#F23645, 93), color.new(#089981, 58), color.new(#F23645, 58), line.style_solid)
+
+// == Background panel (top right): reports structural background only, never a buy/sell call ==
+// Background score (mechanical): position (above value area +1 / inside 0 / below -1) + long term (price vs EMA200, +/-1) + short term (EMA20 vs EMA60, +/-1)
+// >= +2 bullish background, <= -2 bearish background, otherwise by position: inside value area = neutral range, outside = transition / undefined.
+string GB = "Background Panel"
+bgOn = input.bool(true, "Show Background Panel (top right)", group=GB, tooltip="Reports structural background only (position / long-term / short-term mechanical score). Not a trading signal; wait for your own trigger.")
+
+var table bgTbl = table.new(position.top_right, 2, 7, bgcolor=color.new(#FFFFFF, 8), border_width=1, border_color=color.new(#9E9E9E, 30))
+
+// Find the nearest bearish zone above price and the nearest bullish zone below price in one FVG set
+f_near(tops, bots, dirs, price) =>
+    float rB = na
+    float rT = na
+    float sT = na
+    float sB = na
+    for [i, d] in dirs
+        t = array.get(tops, i)
+        b = array.get(bots, i)
+        if d < 0 and b > price and (na(rB) or b < rB)
+            rB := b
+            rT := t
+        if d > 0 and t < price and (na(sT) or t > sT)
+            sT := t
+            sB := b
+    [rB, rT, sT, sB]
+
+if barstate.islast
+    if not bgOn
+        table.clear(bgTbl, 0, 0, 1, 6)
+    else if na(gPoc)
+        table.cell(bgTbl, 0, 0, "Background", text_size=size.small, text_color=#37474F)
+        table.cell(bgTbl, 1, 0, "Not enough data", text_size=size.small, text_color=#37474F)
+    else
+        // -- Score the three factors --
+        posScore = 0
+        posText = "—"
+        if not na(gVah) and not na(gVal)
+            if close > gVah
+                posScore := 1
+                posText := "Above Value Area"
+            else if close < gVal
+                posScore := -1
+                posText := "Below Value Area"
+            else
+                posText := "Inside Value Area"
+        else
+            posText := close >= gPoc ? "Above POC" : "Below POC"
+        e200 = ta.ema(close, 200)
+        ltScore = na(e200) ? 0 : close > e200 ? 1 : -1
+        ltText = na(e200) ? "Not enough data" : close > e200 ? "Above EMA200 - Bullish" : "Below EMA200 - Bearish"
+        e20 = ta.ema(close, 20)
+        e60 = ta.ema(close, 60)
+        stDiff = (e20 - e60) / close * 100
+        stScore = math.abs(stDiff) < 0.1 ? 0 : stDiff > 0 ? 1 : -1
+        stText = math.abs(stDiff) < 0.1 ? "EMA20~60 - Tangled" : stDiff > 0 ? "EMA20>60 - Bullish Alignment" : "EMA20<60 - Bearish Alignment"
+        total = posScore + ltScore + stScore
+        verdict = total >= 2 ? "Bullish Background" : total <= -2 ? "Bearish Background" : posScore == 0 and not na(gVah) ? "Neutral - In-Value Range" : "Transition - No Clear Bias"
+        vCol = total >= 2 ? color.new(#2E7D32, 78) : total <= -2 ? color.new(#C4555E, 78) : color.new(#9E9E9E, 72)
+        // -- POC relative position --
+        pocPct = (gPoc - close) / close * 100
+        pocText = math.abs(pocPct) < 0.3 ? "Near price " + str.tostring(gPoc, format.mintick) : pocPct > 0 ? "Above +" + str.tostring(pocPct, "#.#") + "% - Resistance" : "Below " + str.tostring(pocPct, "#.#") + "% - Support"
+        // -- Nearest FVG zones --
+        [rB1, rT1, sT1, sB1] = f_near(zt60, zp60, zd60, close)
+        [rB2, rT2, sT2, sB2] = f_near(zt240, zp240, zd240, close)
+        [rB3, rT3, sT3, sB3] = f_near(ztD, zpD, zdD, close)
+        float resB = na
+        float resT = na
+        resTag = ""
+        if not na(rB1)
+            resB := rB1
+            resT := rT1
+            resTag := "1H"
+        if not na(rB2) and (na(resB) or rB2 < resB)
+            resB := rB2
+            resT := rT2
+            resTag := "4H"
+        if not na(rB3) and (na(resB) or rB3 < resB)
+            resB := rB3
+            resT := rT3
+            resTag := "Daily"
+        float supT = na
+        float supB = na
+        supTag = ""
+        if not na(sT1)
+            supT := sT1
+            supB := sB1
+            supTag := "1H"
+        if not na(sT2) and (na(supT) or sT2 > supT)
+            supT := sT2
+            supB := sB2
+            supTag := "4H"
+        if not na(sT3) and (na(supT) or sT3 > supT)
+            supT := sT3
+            supB := sB3
+            supTag := "Daily"
+        resText = not na(resB) ? str.tostring(resB, format.mintick) + "-" + str.tostring(resT, format.mintick) + " (" + resTag + ")" : not na(gVah) and gVah > close ? "VAH " + str.tostring(gVah, format.mintick) : "No nearby resistance"
+        supText = not na(supT) ? str.tostring(supB, format.mintick) + "-" + str.tostring(supT, format.mintick) + " (" + supTag + ")" : not na(gVal) and gVal < close ? "VAL " + str.tostring(gVal, format.mintick) : "No nearby support"
+        // -- Fill the table --
+        tc = #37474F
+        table.cell(bgTbl, 0, 0, "Background", text_size=size.small, text_color=tc)
+        table.cell(bgTbl, 1, 0, verdict, text_size=size.small, text_color=tc, bgcolor=vCol)
+        table.cell(bgTbl, 0, 1, "Position", text_size=size.small, text_color=tc)
+        table.cell(bgTbl, 1, 1, posText, text_size=size.small, text_color=tc)
+        table.cell(bgTbl, 0, 2, "POC", text_size=size.small, text_color=tc)
+        table.cell(bgTbl, 1, 2, pocText, text_size=size.small, text_color=tc)
+        table.cell(bgTbl, 0, 3, "Long Term", text_size=size.small, text_color=tc)
+        table.cell(bgTbl, 1, 3, ltText, text_size=size.small, text_color=tc)
+        table.cell(bgTbl, 0, 4, "Short Term", text_size=size.small, text_color=tc)
+        table.cell(bgTbl, 1, 4, stText, text_size=size.small, text_color=tc)
+        table.cell(bgTbl, 0, 5, "Resistance Above", text_size=size.small, text_color=tc)
+        table.cell(bgTbl, 1, 5, resText, text_size=size.small, text_color=tc)
+        table.cell(bgTbl, 0, 6, "Support Below", text_size=size.small, text_color=tc)
+        table.cell(bgTbl, 1, 6, supText, text_size=size.small, text_color=tc)
